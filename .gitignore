@@ -11,3 +11,4 @@ wheels/
 
 # Markdown files
 *.md
+policies/*.pkl
