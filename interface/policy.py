@@ -46,8 +46,7 @@ class OpponentPolicy:
             self.q_table = None
             self.mode = "fallback"
             self.warning = (
-                f"Could not load learned policy ({type(error).__name__}: {error}). "
-                "The opponent is using the heuristic fallback."
+                f"Could not load learned policy the opponent is using the heuristic fallback."
             )
             return False
 

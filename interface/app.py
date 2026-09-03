@@ -15,6 +15,7 @@ class SkyjoApp:
     def __init__(self, root, policy_path):
         self.root = root
         self.root.title("Skyjo — Human vs Policy")
+        self.root.geometry("820x860")
         self.root.minsize(820, 760)
         self._configure_fonts()
 
@@ -30,8 +31,9 @@ class SkyjoApp:
         self.match_text = tk.StringVar()
         self.total_text = tk.StringVar()
         self.last_match_text = tk.StringVar()
+        self.opponent_points_text = tk.StringVar(value="Live points: 0")
+        self.human_points_text = tk.StringVar(value="Live points: 0")
         self.status_text = tk.StringVar(value="Loading learned policy…")
-        self.drawn_text = tk.StringVar(value="Drawn card: —")
 
         self._build_layout()
         self._refresh()
@@ -44,8 +46,57 @@ class SkyjoApp:
         tkfont.nametofont("TkMenuFont").configure(size=13)
 
     def _build_layout(self):
-        container = ttk.Frame(self.root, padding=16)
-        container.pack(fill="both", expand=True)
+        outer = ttk.Frame(self.root)
+        outer.pack(fill="both", expand=True)
+        outer.columnconfigure(0, weight=1)
+        outer.rowconfigure(0, weight=1)
+
+        canvas = tk.Canvas(outer, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+
+        footer = ttk.Frame(outer, padding=(12, 8))
+        footer.grid(row=1, column=0, columnspan=2, sticky="ew")
+        footer.columnconfigure(0, weight=1)
+        footer.columnconfigure(2, weight=1)
+        button_group = ttk.Frame(footer)
+        button_group.grid(row=0, column=1)
+
+        self.start_button = ttk.Button(
+            button_group,
+            text="Start match",
+            command=self._start_match,
+        )
+        self.start_button.pack(side="left", padx=5)
+        self.next_button = ttk.Button(
+            button_group,
+            text="Next match",
+            command=self._prepare_opening,
+        )
+        self.next_button.pack(side="left", padx=5)
+        self.new_series_button = ttk.Button(
+            button_group,
+            text="New series",
+            command=self._new_series,
+        )
+        self.new_series_button.pack(side="left", padx=5)
+
+        container = ttk.Frame(canvas, padding=12)
+        content_window = canvas.create_window((0, 0), window=container, anchor="nw")
+        container.bind(
+            "<Configure>",
+            lambda event: canvas.configure(scrollregion=canvas.bbox("all")),
+        )
+        canvas.bind(
+            "<Configure>",
+            lambda event: canvas.itemconfigure(content_window, width=event.width),
+        )
+        canvas.bind_all(
+            "<MouseWheel>",
+            lambda event: canvas.yview_scroll(int(-1 * (event.delta / 120)), "units"),
+        )
 
         ttk.Label(
             container,
@@ -76,6 +127,11 @@ class SkyjoApp:
 
         opponent_frame = ttk.LabelFrame(container, text="Opponent", padding=10)
         opponent_frame.pack(pady=(12, 8))
+        ttk.Label(
+            opponent_frame,
+            textvariable=self.opponent_points_text,
+            font=("TkDefaultFont", 14, "bold"),
+        ).grid(row=0, column=0, columnspan=4, sticky="ew", pady=(0, 6))
         self.opponent_cards = []
         for index in range(N_CARDS):
             label = tk.Label(
@@ -89,26 +145,45 @@ class SkyjoApp:
                 font=("TkDefaultFont", 18, "bold"),
             )
             row, col = divmod(index, 4)
-            label.grid(row=row, column=col, padx=4, pady=4)
+            label.grid(row=row + 1, column=col, padx=4, pady=4)
             self.opponent_cards.append(label)
 
         table_frame = ttk.Frame(container, padding=8)
         table_frame.pack()
-        self.draw_button = ttk.Button(
+        ttk.Label(table_frame, text="Deck").grid(row=0, column=0)
+        ttk.Label(table_frame, text="Pile").grid(row=0, column=1)
+        ttk.Label(table_frame, text="Drawn card").grid(row=0, column=2)
+        self.draw_button = tk.Label(
             table_frame,
-            text="Draw",
-            command=self._draw_card,
+            text="DRAW",
+            width=self.CARD_WIDTH,
+            height=2,
+            relief="raised",
+            cursor="hand2",
+            font=("TkDefaultFont", 18, "bold"),
         )
-        self.draw_button.grid(row=0, column=0, padx=8)
-        self.discard_button = ttk.Button(
+        self.draw_button.grid(row=1, column=0, padx=8, pady=(4, 0))
+        self.draw_button.bind("<Button-1>", lambda _event: self._draw_card())
+        self.discard_button = tk.Label(
             table_frame,
-            text="Pile: —",
-            command=self._choose_discard,
+            text="—",
+            width=self.CARD_WIDTH,
+            height=2,
+            relief="raised",
+            cursor="hand2",
+            font=("TkDefaultFont", 18, "bold"),
         )
-        self.discard_button.grid(row=0, column=1, padx=8)
-        ttk.Label(table_frame, textvariable=self.drawn_text).grid(
-            row=0, column=2, padx=14
+        self.discard_button.grid(row=1, column=1, padx=8, pady=(4, 0))
+        self.discard_button.bind("<Button-1>", lambda _event: self._choose_discard())
+        self.drawn_label = tk.Label(
+            table_frame,
+            text="—",
+            width=self.CARD_WIDTH,
+            height=2,
+            relief="ridge",
+            font=("TkDefaultFont", 18, "bold"),
         )
+        self.drawn_label.grid(row=1, column=2, padx=8, pady=(4, 0))
 
         action_frame = ttk.Frame(container)
         action_frame.pack(pady=(0, 8))
@@ -127,20 +202,28 @@ class SkyjoApp:
 
         human_frame = ttk.LabelFrame(container, text="You", padding=10)
         human_frame.pack(pady=8)
+        ttk.Label(
+            human_frame,
+            textvariable=self.human_points_text,
+            font=("TkDefaultFont", 14, "bold"),
+        ).grid(row=0, column=0, columnspan=4, sticky="ew", pady=(0, 6))
         self.human_cards = []
         for index in range(N_CARDS):
-            button = tk.Button(
+            button = tk.Label(
                 human_frame,
                 text="■",
                 width=self.CARD_WIDTH,
                 height=2,
-                command=lambda card_index=index: self._click_human_card(card_index),
-                disabledforeground="#2f343a",
+                cursor="hand2",
                 font=("TkDefaultFont", 18, "bold"),
                 relief="raised",
             )
+            button.bind(
+                "<Button-1>",
+                lambda _event, card_index=index: self._click_human_card(card_index),
+            )
             row, col = divmod(index, 4)
-            button.grid(row=row, column=col, padx=4, pady=4)
+            button.grid(row=row + 1, column=col, padx=4, pady=4)
             self.human_cards.append(button)
 
         self.status_label = tk.Label(
@@ -151,27 +234,6 @@ class SkyjoApp:
             font=("TkDefaultFont", 14, "bold"),
         )
         self.status_label.pack()
-
-        footer = ttk.Frame(container)
-        footer.pack(pady=4)
-        self.start_button = ttk.Button(
-            footer,
-            text="Start match",
-            command=self._start_match,
-        )
-        self.start_button.pack(side="left", padx=5)
-        self.next_button = ttk.Button(
-            footer,
-            text="Next match",
-            command=self._prepare_opening,
-        )
-        self.next_button.pack(side="left", padx=5)
-        self.new_series_button = ttk.Button(
-            footer,
-            text="New series",
-            command=self._new_series,
-        )
-        self.new_series_button.pack(side="left", padx=5)
 
     def _load_policy(self):
         loaded = self.policy.load()
@@ -209,11 +271,22 @@ class SkyjoApp:
         self._prepare_opening()
 
     def _draw_card(self):
+        if (
+            not self.session.human_turn
+            or self.session.turn_phase != "choose_source"
+            or not self.session.action_is_legal(DRAW_ACTION)
+        ):
+            return
         self.session.human_draw()
         self.selected_move = None
         self._refresh()
 
     def _choose_discard(self):
+        if not self.session.human_turn or self.session.turn_phase != "choose_source":
+            return
+        mask = self.session.environment.observe(self.session.human_agent)["action_mask"]
+        if not any(mask[TAKE_DISCARD_OFFSET:]):
+            return
         self.selected_move = "take"
         self._refresh()
 
@@ -233,10 +306,16 @@ class SkyjoApp:
         if not self.session.human_turn:
             return
         if self.selected_move == "take":
+            if not self.session.action_is_legal(TAKE_DISCARD_OFFSET + index):
+                return
             self.session.human_take_discard(index)
         elif self.selected_move == "replace":
+            if not self.session.action_is_legal(index):
+                return
             self.session.human_replace_with_drawn(index)
         elif self.selected_move == "reveal":
+            if not self.session.action_is_legal(N_CARDS + index):
+                return
             self.session.human_discard_and_reveal(index)
         else:
             return
@@ -309,24 +388,48 @@ class SkyjoApp:
                     background="#38bdf8" if selected else "#334155",
                     foreground="#082f49" if selected else "#ffffff",
                     disabledforeground="#082f49" if selected else "#ffffff",
+                    activebackground="#38bdf8" if selected else "#334155",
+                    activeforeground="#082f49" if selected else "#ffffff",
+                    highlightbackground="#38bdf8" if selected else "#334155",
+                    highlightcolor="#38bdf8" if selected else "#334155",
+                    highlightthickness=2,
                     relief="sunken" if selected else "raised",
                 )
             for label in self.opponent_cards:
                 label.configure(
                     text="■", background="#334155", foreground="#ffffff"
                 )
-            self.drawn_text.set("Drawn card: —")
-            self.discard_button.configure(text="Pile: —")
+            self.opponent_points_text.set("Live points: 0")
+            self.human_points_text.set("Live points: 0")
+            self._configure_deck_back(self.draw_button, "DRAW")
+            self._configure_value_widget(self.discard_button, "—", None)
+            self._configure_value_widget(self.drawn_label, "—", None)
             return
 
         self._render_hand(self.session.policy_agent, self.opponent_cards)
         self._render_hand(self.session.human_agent, self.human_cards)
+        self._refresh_live_points()
         deck = self.session.environment.board.deck
-        self.discard_button.configure(text=f"Pile: {deck.top_discard_value()}")
-        pending = self.session.environment.pending_drawn_card
-        self.drawn_text.set(
-            f"Drawn card: {pending.value}" if pending is not None else "Drawn card: —"
+        top_discard = deck.top_discard_value()
+        self._configure_value_widget(
+            self.discard_button,
+            str(top_discard) if top_discard is not None else "—",
+            top_discard,
         )
+        self._configure_deck_back(self.draw_button, "DRAW")
+        pending = self.session.environment.pending_drawn_card
+        pending_value = pending.value if pending is not None else None
+        self._configure_value_widget(
+            self.drawn_label,
+            str(pending_value) if pending_value is not None else "—",
+            pending_value,
+        )
+
+    def _refresh_live_points(self):
+        opponent = self.session.player(self.session.policy_agent)
+        human = self.session.player(self.session.human_agent)
+        self.opponent_points_text.set(f"Live points: {opponent.points}")
+        self.human_points_text.set(f"Live points: {human.points}")
 
     def _render_hand(self, agent, widgets):
         player = self.session.player(agent)
@@ -342,15 +445,20 @@ class SkyjoApp:
                 text=text,
                 background=background,
                 foreground=foreground,
+                highlightbackground=background,
+                highlightcolor=background,
+                highlightthickness=2,
                 relief="ridge",
             )
             if isinstance(widgets[index], tk.Button):
-                widgets[index].configure(disabledforeground=foreground)
+                widgets[index].configure(
+                    activebackground=background,
+                    activeforeground=foreground,
+                    disabledforeground=foreground,
+                )
 
     def _refresh_controls(self):
         for widget in (
-            self.draw_button,
-            self.discard_button,
             self.replace_button,
             self.reveal_button,
             self.start_button,
@@ -359,13 +467,11 @@ class SkyjoApp:
         ):
             widget.configure(state="disabled")
         for button in self.human_cards:
-            button.configure(state="disabled")
+            button.configure(state="normal")
 
         if self.screen == "loading":
             return
         if self.screen == "opening":
-            for button in self.human_cards:
-                button.configure(state="normal")
             if len(self.opening_positions) == 2:
                 self.start_button.configure(state="normal")
             if self.session.match_history:
@@ -384,14 +490,10 @@ class SkyjoApp:
         observation = self.session.environment.observe(self.session.human_agent)
         mask = observation["action_mask"]
         if self.session.turn_phase == "choose_source":
-            if mask[DRAW_ACTION]:
-                self.draw_button.configure(state="normal")
-            if any(mask[TAKE_DISCARD_OFFSET:]):
-                self.discard_button.configure(state="normal")
             if self.selected_move == "take":
                 for index, button in enumerate(self.human_cards):
                     if mask[TAKE_DISCARD_OFFSET + index]:
-                        button.configure(state="normal")
+                        button.configure(relief="sunken")
         else:
             self.replace_button.configure(state="normal")
             if any(mask[N_CARDS : N_CARDS * 2]):
@@ -399,11 +501,11 @@ class SkyjoApp:
             if self.selected_move == "replace":
                 for index, button in enumerate(self.human_cards):
                     if mask[index]:
-                        button.configure(state="normal")
+                        button.configure(relief="sunken")
             elif self.selected_move == "reveal":
                 for index, button in enumerate(self.human_cards):
                     if mask[N_CARDS + index]:
-                        button.configure(state="normal")
+                        button.configure(relief="sunken")
 
     def _refresh_status(self):
         if self.screen == "loading":
@@ -460,13 +562,52 @@ class SkyjoApp:
 
     @staticmethod
     def _card_colors(value):
-        if value <= 0:
+        if value < 0:
+            return "#38bdf8", "#082f49"
+        if value == 0:
             return "#22c55e", "#052e16"
         if value <= 4:
             return "#facc15", "#422006"
         if value <= 8:
             return "#fb923c", "#431407"
         return "#ef4444", "#ffffff"
+
+    def _configure_value_widget(self, widget, text, value):
+        if value is None:
+            background, foreground = "#e2e8f0", "#334155"
+        else:
+            background, foreground = self._card_colors(value)
+        options = {
+            "text": text,
+            "background": background,
+            "foreground": foreground,
+            "highlightbackground": background,
+            "highlightcolor": background,
+            "highlightthickness": 2,
+        }
+        if isinstance(widget, tk.Button):
+            options.update(
+                {
+                    "activebackground": background,
+                    "activeforeground": foreground,
+                    "disabledforeground": foreground,
+                }
+            )
+        widget.configure(**options)
+
+    @staticmethod
+    def _configure_deck_back(widget, text):
+        widget.configure(
+            text=text,
+            background="#7c3aed",
+            foreground="#ffffff",
+            activebackground="#06b6d4",
+            activeforeground="#082f49",
+            disabledforeground="#ffffff",
+            highlightbackground="#7c3aed",
+            highlightcolor="#06b6d4",
+            highlightthickness=2,
+        )
 
 
 def run(policy_path):
