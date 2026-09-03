@@ -50,7 +50,21 @@ class Deck:
     
     def keep_discarded_card(self, card):
         # Keep the discarded card in the deck.
+        card.reveal()
         self.heap.append(card.value)
+
+    def start_discard_pile(self):
+        self.keep_discarded_card(self.sample_card())
+
+    def top_discard_value(self):
+        if not self.heap:
+            return None
+        return self.heap[-1]
+
+    def take_top_discarded_card(self):
+        if not self.heap:
+            raise ValueError("No discarded cards available")
+        return Card(state="revealed", value=self.heap.pop())
     
     # If the deck is empty, the heap is shuffled and becomes the new deck
     def reshuffle_deck(self):

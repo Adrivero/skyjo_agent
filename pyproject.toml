@@ -6,5 +6,6 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "numpy>=2.4.6",
+    "pettingzoo>=1.27.0",
     "rich>=15.0.0",
 ]

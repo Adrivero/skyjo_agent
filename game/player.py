@@ -25,23 +25,33 @@ class Player:
     # Removing a column logic
     def check_if_column_revealed(self, col):
         # Check if a column is fully revealed
-        return all(self.hand.grid[row][col].state == "revealed" for row in range(3))
+        cards = [self.hand.grid[row][col] for row in range(3)]
+        return all(card is not None and card.state == "revealed" for card in cards)
 
     def check_if_column_same_value(self, col):
         # Check if a column has the same value
-        return all(
-            self.hand.grid[row][col].value == self.hand.grid[0][col].value
-            for row in range(3)
-        )
+        cards = [self.hand.grid[row][col] for row in range(3)]
+        return all(card is not None for card in cards) and len(
+            {card.value for card in cards}
+        ) == 1
 
     def remove_column_if_possible(self, col):
         if self.check_if_column_revealed(col) and self.check_if_column_same_value(col):
             # Remove the column from the hand
             for row in range(3):
-                print("Removing card from hand:", self.hand.grid[row][col].value)
                 self.hand.grid[row][col] = (
                     None  # NOTE: For now the cards are dropped as they do not influence the game.
                 )
+            return True
+        return False
+
+    def remove_completed_columns(self):
+        """Remove every fully revealed, equal-value column from the hand."""
+        removed_columns = []
+        for col in range(self.hand.grid.shape[1]):
+            if self.remove_column_if_possible(col):
+                removed_columns.append(col)
+        return removed_columns
     # ------------------------------Functions meant to be called from outside the class -------------------------------------------
     # Helper functions
     def give_hand(self, deck):
@@ -71,8 +81,7 @@ class Player:
        
         existing_card.reveal()
         # Remove a column if it is fully revealed and has the same value
-        for col in range(3):
-            self.remove_column_if_possible(col)
+        self.remove_completed_columns()
     
         return existing_card # Return the card that was replaced and reveal it
     
@@ -84,8 +93,7 @@ class Player:
         existing_card.reveal()
         
         # Remove a column if it is fully revealed and has the same value
-        for col in range(3):
-            self.remove_column_if_possible(col) 
+        self.remove_completed_columns()
         
         return  existing_card  # Return the card that was replaced and reveal it
     
