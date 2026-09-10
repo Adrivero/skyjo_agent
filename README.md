@@ -1,6 +1,6 @@
 # SKYJO MARL agent
 
-This project aims to train learn a policy via multi-agentic reinforcement learning (MARL) to play the card game SKYJO™. 
+This project aims to train learn a policy via **multi-agentic reinforcement learning (MARL)** to play the card game SKYJO™. 
 
 > [!NOTE]
 > This project is still in development.
