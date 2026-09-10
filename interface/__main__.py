@@ -11,12 +11,18 @@ def parse_args():
     parser.add_argument(
         "--policy",
         type=Path,
-        default=Path("policies/skyjo_ppo_policy.pkl"),
-        help="Path to a pickled shared PPO policy (legacy Q-tables are also supported).",
+        default=Path("policies/skyjo_mappo_actor.pt"),
+        help="Path to a versioned recurrent MAPPO actor checkpoint.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Optional reproducible seed for cards and stochastic policy actions.",
     )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     arguments = parse_args()
-    run(arguments.policy)
+    run(arguments.policy, seed=arguments.seed)

@@ -4,7 +4,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk
 
-from agent.environment import DRAW_ACTION, N_CARDS, TAKE_DISCARD_OFFSET
+from agent.environment import DRAW_ACTION, N_CARDS, TAKE_DISCARD_ACTION
 from interface.policy import OpponentPolicy
 from interface.session import SkyjoSession
 
@@ -12,14 +12,15 @@ from interface.session import SkyjoSession
 class SkyjoApp:
     CARD_WIDTH = 7
 
-    def __init__(self, root, policy_path):
+    def __init__(self, root, policy_path, seed=None):
         self.root = root
         self.root.title("Skyjo — Human vs Policy")
         self.root.geometry("820x860")
         self.root.minsize(820, 760)
         self._configure_fonts()
 
-        self.policy = OpponentPolicy(policy_path)
+        self.seed = seed
+        self.policy = OpponentPolicy(policy_path, seed=seed)
         self.session = SkyjoSession(self.policy)
         self.loading_results = queue.Queue()
         self.screen = "loading"
@@ -66,13 +67,13 @@ class SkyjoApp:
 
         self.start_button = ttk.Button(
             button_group,
-            text="Start match",
+            text="Start round",
             command=self._start_match,
         )
         self.start_button.pack(side="left", padx=5)
         self.next_button = ttk.Button(
             button_group,
-            text="Next match",
+            text="Next round",
             command=self._prepare_opening,
         )
         self.next_button.pack(side="left", padx=5)
@@ -257,7 +258,8 @@ class SkyjoApp:
         if len(self.opening_positions) != 2:
             return
         positions = [divmod(index, 4) for index in sorted(self.opening_positions)]
-        self.session.start_match(positions)
+        initial_seed = self.seed if self.session.environment is None else None
+        self.session.start_match(positions, seed=initial_seed)
         self.screen = "playing"
         self.selected_move = None
         self._refresh()
@@ -285,8 +287,9 @@ class SkyjoApp:
         if not self.session.human_turn or self.session.turn_phase != "choose_source":
             return
         mask = self.session.environment.observe(self.session.human_agent)["action_mask"]
-        if not any(mask[TAKE_DISCARD_OFFSET:]):
+        if not mask[TAKE_DISCARD_ACTION]:
             return
+        self.session.human_choose_discard()
         self.selected_move = "take"
         self._refresh()
 
@@ -306,7 +309,7 @@ class SkyjoApp:
         if not self.session.human_turn:
             return
         if self.selected_move == "take":
-            if not self.session.action_is_legal(TAKE_DISCARD_OFFSET + index):
+            if not self.session.action_is_legal(index):
                 return
             self.session.human_take_discard(index)
         elif self.selected_move == "replace":
@@ -364,18 +367,18 @@ class SkyjoApp:
         match_number = self.session.match_number or 1
         if self.screen == "opening":
             match_number = len(self.session.match_history) + 1
-        self.match_text.set(f"Match {match_number} · First to 100 ends the series")
+        self.match_text.set(f"Round {match_number} · First to 100 ends the series")
         self.total_text.set(
             f"Totals — You: {self.session.totals[self.session.human_agent]}   "
             f"Opponent: {self.session.totals[self.session.policy_agent]}"
         )
         last_match = self.session.last_match
         if last_match is None:
-            self.last_match_text.set("Previous match: —")
+            self.last_match_text.set("Previous round: —")
         else:
             scores = last_match["scores"]
             self.last_match_text.set(
-                f"Previous match — You: {scores[self.session.human_agent]}   "
+                f"Previous round — You: {scores[self.session.human_agent]}   "
                 f"Opponent: {scores[self.session.policy_agent]}"
             )
 
@@ -490,10 +493,11 @@ class SkyjoApp:
         observation = self.session.environment.observe(self.session.human_agent)
         mask = observation["action_mask"]
         if self.session.turn_phase == "choose_source":
-            if self.selected_move == "take":
-                for index, button in enumerate(self.human_cards):
-                    if mask[TAKE_DISCARD_OFFSET + index]:
-                        button.configure(relief="sunken")
+            return
+        if self.session.turn_phase == "play_discard":
+            for index, button in enumerate(self.human_cards):
+                if mask[index]:
+                    button.configure(relief="sunken")
         else:
             self.replace_button.configure(state="normal")
             if any(mask[N_CARDS : N_CARDS * 2]):
@@ -514,12 +518,18 @@ class SkyjoApp:
         if self.screen == "opening":
             remaining = 2 - len(self.opening_positions)
             self.status_text.set(
-                "Choose two cards to reveal, then start the match."
+                "Choose two cards to reveal, then start the round."
                 if remaining
                 else "Opening cards selected. Start the match when ready."
             )
             return
         if self.session.series_over:
+            if any(self.session.environment.truncations.values()):
+                self.status_text.set(
+                    "The series hit a safety limit and was not scored as a win. "
+                    "Start a new series to play again."
+                )
+                return
             winner = self.session.series_winner
             if winner == "tie":
                 result = "The series ends in a tie."
@@ -539,7 +549,7 @@ class SkyjoApp:
                 name = "Your" if closer == self.session.human_agent else "Opponent's"
                 penalty = f" {name} closing score doubled from {raw[closer]} to {scores[closer]}."
             self.status_text.set(
-                f"Match complete — You {scores[self.session.human_agent]}, "
+                f"Round complete — You {scores[self.session.human_agent]}, "
                 f"Opponent {scores[self.session.policy_agent]}.{penalty}"
             )
             return
@@ -553,6 +563,8 @@ class SkyjoApp:
                 self.status_text.set("Choose a card to replace with the discard.")
             else:
                 self.status_text.set(f"Your turn: draw a card or take the discard.{final_round}")
+        elif self.session.turn_phase == "play_discard":
+            self.status_text.set("Choose a card to replace with the discard.")
         elif self.selected_move == "replace":
             self.status_text.set("Choose a card to replace with the drawn card.")
         elif self.selected_move == "reveal":
@@ -610,7 +622,7 @@ class SkyjoApp:
         )
 
 
-def run(policy_path):
+def run(policy_path, seed=None):
     root = tk.Tk()
-    SkyjoApp(root, policy_path)
+    SkyjoApp(root, policy_path, seed=seed)
     root.mainloop()

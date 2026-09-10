@@ -34,8 +34,9 @@ class Deck:
     # }
     
 
-    def __init__(self):
+    def __init__(self, rng=None):
         self.hands = []
+        self.rng = rng or random
         self.deck = [-2] * 5 + [-1] * 10 + [0] * 15 + [i for i in range(1, 13) for _ in range(10)]
         self.heap = []
      
@@ -44,7 +45,7 @@ class Deck:
         self.reshuffle_deck() # If the deck is empty, reshuffle the heap into the deck
         if len(self.deck) == 0:
             raise ValueError("No more cards in the deck")
-        card_value = random.choice(self.deck)
+        card_value = self.rng.choice(self.deck)
         self.deck.remove(card_value)
         return Card(value=card_value)
     
@@ -71,7 +72,7 @@ class Deck:
         if len(self.deck) == 0:
             self.deck = self.heap
             self.heap = []
-            random.shuffle(self.deck)
+        self.rng.shuffle(self.deck)
     
         
     

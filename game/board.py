@@ -10,13 +10,14 @@ from rich.table import Table
 
 # Contains player objects with their own cards. Keeps track of a players cards and their neighbors.
 class Board:
-    def __init__(self, n_players):
+    def __init__(self, n_players, rng=None):
         self.n_players = n_players
         self.random_start_player = True
+        self.rng = rng or random
 
     def reset_game(self, player_ids=None, shuffle_players=True):
         self.i_turn = 0
-        self.deck = Deck()
+        self.deck = Deck(rng=self.rng)
         if player_ids is None:
             player_ids = [chr(65 + i) for i in range(self.n_players)]
 
@@ -34,7 +35,7 @@ class Board:
         for player in self.players:
             selected_positions = initial_positions.get(player.id)
             if selected_positions is None:
-                positions = random.sample(range(12), 2)
+                positions = self.rng.sample(range(12), 2)
                 pos_1 = divmod(positions[0], 4)
                 pos_2 = divmod(positions[1], 4)
             else:
@@ -91,7 +92,13 @@ class Board:
                 for player_id, score in scoreboard.items()
                 if player_id != closing_player_id
             ]
-            if opponent_scores and scoreboard[closing_player_id] > min(opponent_scores):
+            # Official SKYJO only doubles a positive score when the player who
+            # ended the round did not also have the lowest score.
+            if (
+                opponent_scores
+                and scoreboard[closing_player_id] > 0
+                and scoreboard[closing_player_id] > min(opponent_scores)
+            ):
                 scoreboard[closing_player_id] *= 2
 
         return scoreboard
@@ -161,19 +168,19 @@ class Board:
             for card in row
             if card is not None and card.state == "revealed"
         ]
-        lowest_revealed_card = (
-            min(revealed_cards, key=lambda card: card.value)
+        highest_revealed_card = (
+            max(revealed_cards, key=lambda card: card.value)
             if revealed_cards
             else None
         )
         if (
-            lowest_revealed_card is not None
-            and new_deck_card.value < lowest_revealed_card.value
+            highest_revealed_card is not None
+            and new_deck_card.value < highest_revealed_card.value
         ):
             self.play_player_action(
                 player,
                 action_type="replace",
-                position=lowest_revealed_card.position,
+                position=highest_revealed_card.position,
                 drawn_card=new_deck_card,
             )
         else:
@@ -187,17 +194,17 @@ class Board:
                 self.play_player_action(
                     player,
                     action_type="discard_reveal",
-                    position=random.choice(hidden_positions),
+                    position=self.rng.choice(hidden_positions),
                     drawn_card=new_deck_card,
                 )
             else:
-                if lowest_revealed_card is None:
+                if highest_revealed_card is None:
                     self.deck.keep_discarded_card(new_deck_card)
                     return
                 self.play_player_action(
                     player,
                     action_type="replace",
-                    position=lowest_revealed_card.position,
+                    position=highest_revealed_card.position,
                     drawn_card=new_deck_card,
                 )
 
@@ -208,7 +215,7 @@ class Board:
     # ---------------------------------------- 
     # Helper functions
     def random_player_order(self):
-        random.shuffle(self.players)
+        self.rng.shuffle(self.players)
         self.random_start_player = False
             
     def show_board(self):

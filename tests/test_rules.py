@@ -27,11 +27,11 @@ class FinalScoreTests(unittest.TestCase):
         board = board_with_scores(10, 5)
         self.assertEqual(board.final_scores("player_0")["player_0"], 20)
 
-    def test_zero_and_negative_closing_scores_are_multiplied_numerically(self):
+    def test_zero_and_negative_closing_scores_are_never_doubled(self):
         zero_board = board_with_scores(0, -1)
         negative_board = board_with_scores(-2, -5)
         self.assertEqual(zero_board.final_scores("player_0")["player_0"], 0)
-        self.assertEqual(negative_board.final_scores("player_0")["player_0"], -4)
+        self.assertEqual(negative_board.final_scores("player_0")["player_0"], -2)
 
 
 class ColumnRemovalTests(unittest.TestCase):

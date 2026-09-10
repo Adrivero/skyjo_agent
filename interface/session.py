@@ -1,13 +1,8 @@
-from agent.environment import (
-    DRAW_ACTION,
-    N_CARDS,
-    TAKE_DISCARD_OFFSET,
-    env,
-)
+from agent.environment import DRAW_ACTION, N_CARDS, TAKE_DISCARD_ACTION, env, opening_action
 
 
 class SkyjoSession:
-    """UI-independent controller for one human-versus-policy series."""
+    """UI-independent controller for one official human-versus-policy series."""
 
     def __init__(self, opponent_policy, target_score=100):
         self.opponent_policy = opponent_policy
@@ -16,25 +11,38 @@ class SkyjoSession:
         self.policy_agent = "player_1"
         self.environment = None
         self.match_history = []
-        self.totals = {self.human_agent: 0, self.policy_agent: 0}
         self.match_number = 0
-        self._match_recorded = False
+        self._awaiting_next_round = False
+
+    @property
+    def totals(self):
+        if self.environment is None:
+            return {self.human_agent: 0, self.policy_agent: 0}
+        return self.environment.series_scores
 
     @property
     def match_active(self):
-        return self.environment is not None and not self.match_over
+        return (
+            self.environment is not None
+            and not self.series_over
+            and not self._awaiting_next_round
+            and self.environment.turn_phase != "choose_opening"
+        )
 
     @property
     def match_over(self):
-        return self.environment is not None and bool(self.environment.scores)
+        return self._awaiting_next_round or self.series_over
 
     @property
     def series_over(self):
-        return any(score >= self.target_score for score in self.totals.values())
+        return self.environment is not None and (
+            any(self.environment.terminations.values())
+            or any(self.environment.truncations.values())
+        )
 
     @property
     def current_agent(self):
-        if not self.match_active:
+        if self.environment is None or self.series_over:
             return None
         return self.environment.agent_selection
 
@@ -44,9 +52,7 @@ class SkyjoSession:
 
     @property
     def turn_phase(self):
-        if not self.match_active:
-            return None
-        return self.environment.turn_phase
+        return None if self.environment is None else self.environment.turn_phase
 
     @property
     def last_match(self):
@@ -54,40 +60,42 @@ class SkyjoSession:
 
     @property
     def series_winner(self):
-        if not self.series_over:
-            return None
-        human_total = self.totals[self.human_agent]
-        policy_total = self.totals[self.policy_agent]
-        if human_total == policy_total:
-            return "tie"
-        return self.human_agent if human_total < policy_total else self.policy_agent
+        return None if self.environment is None else self.environment.series_winner
 
     def start_match(self, human_positions, seed=None):
-        if self.match_active:
-            raise RuntimeError("The current match is still active.")
         if self.series_over:
-            raise RuntimeError("Start a new series before playing another match.")
+            raise RuntimeError("Start a new series before playing another round.")
+        if self.environment is None:
+            self.environment = env(target_score=self.target_score)
+            self.environment.reset(seed=seed)
+            self.opponent_policy.reset(seed)
+        elif not self._awaiting_next_round:
+            raise RuntimeError("The current round is still active.")
 
         positions = [tuple(position) for position in human_positions]
-        if len(positions) != 2 or len(set(positions)) != 2:
-            raise ValueError("Choose exactly two distinct opening positions.")
-
-        self.environment = env()
-        self.environment.reset(
-            seed=seed,
-            options={"initial_positions": {self.human_agent: positions}},
-        )
-        self.match_number = len(self.match_history) + 1
-        self._match_recorded = False
+        action = opening_action(positions)
+        self._awaiting_next_round = False
+        self.opponent_policy.reset_round()
+        while self.environment.turn_phase == "choose_opening":
+            if self.environment.agent_selection == self.human_agent:
+                self.environment.step(action)
+            else:
+                observation = self.environment.observe(self.policy_agent)
+                self.environment.step(self.opponent_policy.choose_action(observation))
+        self.match_number = self.environment.round_number
         return self.current_agent
 
     def human_draw(self):
         self._require_human_phase("choose_source")
         self._step(DRAW_ACTION)
 
-    def human_take_discard(self, card_index):
+    def human_choose_discard(self):
         self._require_human_phase("choose_source")
-        self._step(TAKE_DISCARD_OFFSET + self._validate_index(card_index))
+        self._step(TAKE_DISCARD_ACTION)
+
+    def human_take_discard(self, card_index):
+        self._require_human_phase("play_discard")
+        self._step(self._validate_index(card_index))
 
     def human_replace_with_drawn(self, card_index):
         self._require_human_phase("play_drawn")
@@ -112,42 +120,36 @@ class SkyjoSession:
         return 0 <= action < len(mask) and bool(mask[action])
 
     def player(self, agent):
-        if self.environment is None:
-            return None
-        return self.environment.players[agent]
+        return None if self.environment is None else self.environment.players[agent]
 
     def new_series(self):
         self.environment = None
         self.match_history = []
-        self.totals = {self.human_agent: 0, self.policy_agent: 0}
         self.match_number = 0
-        self._match_recorded = False
+        self._awaiting_next_round = False
+        self.opponent_policy.reset()
 
     def _step(self, action):
         if not self.action_is_legal(action):
             raise ValueError(f"Action {action} is not legal in the current state.")
         self.environment.step(action)
-        self._record_match_if_finished()
+        self._record_round_if_finished()
 
-    def _record_match_if_finished(self):
-        if not self.match_over or self._match_recorded:
+    def _record_round_if_finished(self):
+        if not self.environment.round_complete:
             return
-
-        scores = dict(self.environment.scores)
-        raw_scores = {
-            agent: self.environment.final_infos[agent]["raw_score"]
-            for agent in self.environment.possible_agents
-        }
+        source = self.environment.last_round_info
+        if self.match_history and self.match_history[-1]["match"] == source["round"]:
+            return
         record = {
-            "match": self.match_number,
-            "scores": scores,
-            "raw_scores": raw_scores,
-            "closing_agent": self.environment.closing_agent,
+            "match": source["round"],
+            "scores": dict(source["scores"]),
+            "raw_scores": dict(source["raw_scores"]),
+            "closing_agent": source["closer"],
+            "turns": source["turns"],
         }
         self.match_history.append(record)
-        for agent, score in scores.items():
-            self.totals[agent] += score
-        self._match_recorded = True
+        self._awaiting_next_round = not self.series_over
 
     def _require_human_phase(self, phase):
         if not self.match_active or not self.human_turn:

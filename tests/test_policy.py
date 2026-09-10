@@ -1,67 +1,74 @@
-import pickle
 import tempfile
 import unittest
 from pathlib import Path
 
-import numpy as np
-
-from agent.environment import ACTION_COUNT, env
-from agent.policy import encode_state
+from agent.environment import TAKE_DISCARD_ACTION, env, opening_action
+from agent.policy import HeuristicPolicy
+from agent.ppo import RecurrentActorCritic, save_actor_checkpoint
 from interface.policy import OpponentPolicy
 
 
+def complete_opening(game):
+    actions = {
+        "player_0": opening_action(((0, 0), (0, 1))),
+        "player_1": opening_action(((1, 0), (1, 1))),
+    }
+    while game.turn_phase == "choose_opening":
+        game.step(actions[game.agent_selection])
+
+
 class PolicyControllerTests(unittest.TestCase):
-    def setUp(self):
-        self.game = env()
-        self.game.reset(seed=2)
-        self.agent = self.game.agent_selection
-        self.observation = self.game.observe(self.agent)
+    def test_heuristic_opening_is_legal_and_spans_columns(self):
+        game = env()
+        game.reset(seed=1)
+        observation = game.observe(game.agent_selection)
+        action = HeuristicPolicy().choose_action(observation)
+        self.assertTrue(observation["action_mask"][action])
+        self.assertEqual(action, opening_action(((0, 0), (0, 1))))
 
-    def write_policy(self, path, q_values, state=None):
-        state = state or encode_state(self.observation)
-        with path.open("wb") as policy_file:
-            pickle.dump({state: q_values}, policy_file)
+    def test_heuristic_takes_low_discard_for_high_visible_card(self):
+        game = env()
+        game.reset(seed=2)
+        complete_opening(game)
+        agent = game.agent_selection
+        cards = game.players[agent].hand.grid.flatten()
+        visible = [index for index, card in enumerate(cards) if card.state == "revealed"]
+        cards[visible[0]].value = 12
+        cards[visible[1]].value = 3
+        game.board.deck.heap[-1] = -2
+        action = HeuristicPolicy().choose_action(game.observe(agent))
+        self.assertEqual(action, TAKE_DISCARD_ACTION)
+        game.step(action)
+        self.assertEqual(HeuristicPolicy().choose_action(game.observe(agent)), visible[0])
 
-    def test_loaded_policy_chooses_highest_valued_legal_action(self):
-        mask = self.observation["action_mask"]
-        legal = np.flatnonzero(mask)
-        illegal = np.flatnonzero(mask == 0)
-        q_values = np.zeros(ACTION_COUNT, dtype=np.float32)
-        q_values[legal[-1]] = 5
-        q_values[illegal[0]] = 100
-
+    def test_missing_and_corrupt_checkpoints_use_fallback(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "policy.pkl"
-            self.write_policy(path, q_values)
-            policy = OpponentPolicy(path)
-            self.assertTrue(policy.load())
-            self.assertEqual(policy.choose_action(self.observation), legal[-1])
-
-    def test_missing_and_corrupt_policies_use_a_legal_fallback(self):
-        with tempfile.TemporaryDirectory() as directory:
-            missing = OpponentPolicy(Path(directory) / "missing.pkl")
+            missing = OpponentPolicy(Path(directory) / "missing.pt", device="cpu")
             self.assertFalse(missing.load())
-            action = missing.choose_action(self.observation)
-            self.assertTrue(self.observation["action_mask"][action])
-            self.assertIn("heuristic fallback", missing.warning)
+            game = env()
+            game.reset(seed=4)
+            observation = game.observe(game.agent_selection)
+            self.assertTrue(observation["action_mask"][missing.choose_action(observation)])
 
-            corrupt_path = Path(directory) / "corrupt.pkl"
-            corrupt_path.write_bytes(b"\x80\x04unfinished")
-            corrupt = OpponentPolicy(corrupt_path)
+            corrupt_path = Path(directory) / "corrupt.pt"
+            corrupt_path.write_bytes(b"not a checkpoint")
+            corrupt = OpponentPolicy(corrupt_path, device="cpu")
             self.assertFalse(corrupt.load())
-            self.assertTrue(self.observation["action_mask"][corrupt.choose_action(self.observation)])
+            self.assertIn("heuristic fallback", corrupt.warning)
 
-    def test_unseen_state_uses_fallback_and_sets_warning(self):
-        q_values = np.zeros(ACTION_COUNT, dtype=np.float32)
-        unseen_state = tuple([0] * 27)
+    def test_torch_checkpoint_loads_and_seeded_sampling_is_reproducible(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "policy.pkl"
-            self.write_policy(path, q_values, state=unseen_state)
-            policy = OpponentPolicy(path)
-            self.assertTrue(policy.load())
-            action = policy.choose_action(self.observation)
-            self.assertTrue(self.observation["action_mask"][action])
-            self.assertIn("no value", policy.warning)
+            path = Path(directory) / "actor.pt"
+            save_actor_checkpoint(path, RecurrentActorCritic(), step=10, seed=9)
+            first = OpponentPolicy(path, seed=22, device="cpu")
+            second = OpponentPolicy(path, seed=22, device="cpu")
+            self.assertTrue(first.load())
+            self.assertTrue(second.load())
+            game = env()
+            game.reset(seed=8)
+            observation = game.observe(game.agent_selection)
+            self.assertEqual(first.choose_action(observation), second.choose_action(observation))
+            self.assertEqual(first.display_name, "Learned MARL policy")
 
 
 if __name__ == "__main__":

@@ -1,11 +1,13 @@
 [project]
 name = "skyjo-agent"
 version = "0.1.0"
-description = "Add your description here"
+description = "Recurrent league-self-play MARL agent for two-player SKYJO"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "numpy>=2.4.6",
     "pettingzoo>=1.27.0",
     "rich>=15.0.0",
+    "tensorboard>=2.19",
+    "torch>=2.7",
 ]

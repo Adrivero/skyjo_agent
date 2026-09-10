@@ -12,3 +12,10 @@ wheels/
 # Markdown files
 *.md
 policies/*.pkl
+policies/*.pt
+policies/*.pt.json
+policies/
+runs/
+tests/
+runs/*
+tests/*

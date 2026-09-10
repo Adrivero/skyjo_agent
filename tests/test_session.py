@@ -1,102 +1,84 @@
 import unittest
 
-import numpy as np
-
-from agent.environment import N_CARDS
+from agent.policy import HeuristicPolicy
 from interface.session import SkyjoSession
 
 
-class FirstLegalPolicy:
-    warning = None
-
-    def choose_action(self, observation):
-        return int(np.flatnonzero(observation["action_mask"])[0])
-
-
-class FinishedEnvironment:
-    possible_agents = ["player_0", "player_1"]
-
-    def __init__(self, scores, raw_scores=None, closer="player_0"):
-        self.scores = scores
-        raw_scores = raw_scores or scores
-        self.final_infos = {
-            agent: {"raw_score": raw_scores[agent]} for agent in self.possible_agents
-        }
-        self.closing_agent = closer
-
-
 class SessionTests(unittest.TestCase):
-    def test_start_match_uses_human_opening_positions(self):
-        session = SkyjoSession(FirstLegalPolicy())
-        session.start_match([(0, 0), (2, 3)], seed=4)
-        revealed = {
+    def setUp(self):
+        self.opponent = HeuristicPolicy(seed=2)
+        self.human = HeuristicPolicy(seed=3)
+
+    def play_current_round(self, session):
+        while session.match_active:
+            if session.current_agent == session.policy_agent:
+                session.step_policy()
+            else:
+                observation = session.environment.observe(session.human_agent)
+                session._step(self.human.choose_action(observation))
+
+    def test_start_round_uses_human_and_policy_opening_choices(self):
+        session = SkyjoSession(self.opponent)
+        chosen = [(0, 0), (2, 3)]
+        session.start_match(chosen, seed=4)
+        human_revealed = {
             card.position
             for card in session.player(session.human_agent).hand.grid.flatten()
             if card.state == "revealed"
         }
-        self.assertEqual(revealed, {(0, 0), (2, 3)})
+        policy_revealed = sum(
+            card.state == "revealed"
+            for card in session.player(session.policy_agent).hand.grid.flatten()
+        )
+        self.assertEqual(human_revealed, set(chosen))
+        self.assertEqual(policy_revealed, 2)
         self.assertEqual(session.match_number, 1)
 
-    def test_totals_end_series_and_new_series_resets_everything(self):
-        session = SkyjoSession(FirstLegalPolicy())
-        session.match_number = 1
-        session.environment = FinishedEnvironment(
-            {"player_0": 40, "player_1": 60}
+    def test_human_can_take_discard_and_replace_hidden_card(self):
+        session = SkyjoSession(self.opponent)
+        session.start_match([(0, 0), (0, 1)], seed=9)
+        while session.current_agent != session.human_agent:
+            session.step_policy()
+        player = session.player(session.human_agent)
+        target_index = next(
+            index for index, card in enumerate(player.hand.grid.flatten()) if card.state == "hidden"
         )
-        session._record_match_if_finished()
+        old_value = player.hand.grid.flatten()[target_index].value
+        session.environment.board.deck.heap[-1] = -2
+        session.human_choose_discard()
+        self.assertTrue(session.action_is_legal(target_index))
+        session.human_take_discard(target_index)
+        replacement = player.hand.grid.flatten()[target_index]
+        self.assertEqual((replacement.value, replacement.state), (-2, "revealed"))
+        self.assertEqual(session.environment.board.deck.top_discard_value(), old_value)
 
-        session.match_number = 2
-        session._match_recorded = False
-        session.environment = FinishedEnvironment(
-            {"player_0": 35, "player_1": 45}, closer="player_1"
-        )
-        session._record_match_if_finished()
+    def test_round_history_and_closer_starts_next_round(self):
+        session = SkyjoSession(self.opponent, target_score=1000)
+        session.start_match([(0, 0), (0, 1)], seed=12)
+        self.play_current_round(session)
+        self.assertTrue(session.match_over)
+        self.assertFalse(session.series_over)
+        self.assertEqual(len(session.match_history), 1)
+        closer = session.last_match["closing_agent"]
+        totals = dict(session.totals)
 
-        self.assertEqual(session.totals, {"player_0": 75, "player_1": 105})
+        session.start_match([(1, 0), (1, 1)])
+        self.assertEqual(session.match_number, 2)
+        self.assertEqual(session.environment.starting_agent, closer)
+        self.assertEqual(session.totals, totals)
+
+    def test_full_series_completes_and_new_series_resets(self):
+        session = SkyjoSession(self.opponent, target_score=1)
+        session.start_match([(0, 0), (0, 1)], seed=22)
+        self.play_current_round(session)
         self.assertTrue(session.series_over)
-        self.assertEqual(session.series_winner, "player_0")
-        self.assertEqual(len(session.match_history), 2)
+        self.assertIn(session.series_winner, session.environment.possible_agents + ["tie"])
+        self.assertEqual(len(session.match_history), 1)
 
         session.new_series()
         self.assertEqual(session.totals, {"player_0": 0, "player_1": 0})
         self.assertEqual(session.match_history, [])
         self.assertFalse(session.series_over)
-
-    def test_both_crossing_threshold_can_end_in_a_tie(self):
-        session = SkyjoSession(FirstLegalPolicy())
-        session.match_number = 1
-        session.environment = FinishedEnvironment(
-            {"player_0": 100, "player_1": 100}
-        )
-        session._record_match_if_finished()
-        self.assertTrue(session.series_over)
-        self.assertEqual(session.series_winner, "tie")
-
-    def test_human_and_fallback_policy_can_complete_a_match(self):
-        session = SkyjoSession(FirstLegalPolicy())
-        session.start_match([(0, 0), (0, 1)], seed=9)
-
-        steps = 0
-        while session.match_active and steps < 500:
-            if session.current_agent == session.policy_agent:
-                session.step_policy()
-            elif session.turn_phase == "choose_source":
-                session.human_draw()
-            else:
-                mask = session.environment.observe(session.human_agent)["action_mask"]
-                action = int(np.flatnonzero(mask)[0])
-                if action < N_CARDS:
-                    session.human_replace_with_drawn(action)
-                else:
-                    session.human_discard_and_reveal(action - N_CARDS)
-            steps += 1
-
-        self.assertTrue(session.match_over)
-        self.assertEqual(len(session.match_history), 1)
-        self.assertEqual(
-            set(session.last_match["scores"]),
-            {session.human_agent, session.policy_agent},
-        )
 
 
 if __name__ == "__main__":
